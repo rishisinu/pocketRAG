@@ -4,6 +4,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional
+from contextlib import asynccontextmanager
 import sys
 import os
 from pathlib import Path
@@ -48,29 +49,36 @@ class StatsResponse(BaseModel):
     avg_chunk_size: float
 
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="PocketRAG API",
-    description="Fully offline document QA system with citation-backed answers",
-    version="0.1.0"
-)
-
-# Initialize PocketRAG system (global instance)
-# Note: In production, consider using dependency injection
+# Global instance
 pocket_rag: Optional[PocketRAG] = None
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize PocketRAG on startup."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown."""
     global pocket_rag
     
+    # Startup
     print("Initializing PocketRAG system...")
     pocket_rag = PocketRAG(
         data_dir=Path("data"),
         use_llm=False  # Set to True to use LLM (slower but better answers)
     )
     print("PocketRAG ready!")
+    
+    yield
+    
+    # Shutdown (cleanup if needed)
+    print("Shutting down PocketRAG...")
+
+
+# Initialize FastAPI app with lifespan
+app = FastAPI(
+    title="PocketRAG API",
+    description="Fully offline document QA system with citation-backed answers",
+    version="0.1.0",
+    lifespan=lifespan
+)
 
 
 @app.get("/")

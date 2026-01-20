@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 # Base paths
-BASE_DIR = Path(__file__).parent.parent.parent
+BASE_DIR = Path(__file__).parents[2]
 DATA_DIR = BASE_DIR / "data"
 MODELS_DIR = BASE_DIR / "models"
 

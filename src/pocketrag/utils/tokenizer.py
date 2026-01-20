@@ -23,7 +23,7 @@ def count_tokens(text: str, model: str = "gpt2") -> int:
         try:
             encoding = tiktoken.encoding_for_model(model)
             return len(encoding.encode(text))
-        except:
+        except (KeyError, ValueError, Exception):
             pass
     
     # Fallback: approximate token count (average ~4 chars per token)
@@ -60,7 +60,7 @@ def split_by_tokens(text: str, max_tokens: int, overlap: int = 0) -> List[str]:
                 start = end - overlap
             
             return chunks
-        except:
+        except (ImportError, ValueError, Exception):
             pass
     
     # Fallback to simple character-based splitting
