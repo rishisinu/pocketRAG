@@ -1,6 +1,6 @@
 from pathlib import Path
 from uuid import uuid4
-
+import math
 from docx import Document
 import docx
 import fitz
@@ -12,13 +12,16 @@ from app.core.indexing import add_to_index #need to implement this
 
 
 SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".docx",".md"}
-chunck_size = 512
+chunk_size = 512
 chunk_overlap = 102
 model_name = "#all-MiniLM-L6-v2"
 _embedding_model: SentenceTransformer | None = None
 
 def load_model():
+    global _embedding_model
     if _embedding_model is None:
+        _embedding_model = SentenceTransformer(model_name)
+    return _embedding_model
 
 
 
@@ -36,14 +39,26 @@ def process_and_store_data(file_path: str) -> IngestResult:
         )
 
     pages = load_document(path) #list str of pages, now embedding needs to happen
-    chunks = []
-    for page in pages:
+    all_chunks: list[Chunk] = []
+    for i in range(len(pages)):
 
+        page = pages[i]
+        step = chunk_size - chunk_overlap
+        num_chunks = ((len(page) + step - 1) // step)
 
-        for i in range(len(page)):
+        for j in range(num_chunks):
+            if j == 0:
+                starting_ind = 0
+                ending_ind = chunk_size
+            else:
+                starting_ind = j*chunk_size - (j*chunk_overlap)
+                ending_ind = starting_ind + chunk_size
+            chunk_id = str(uuid4())
+            all_chunks.append(Chunk(doc_id=doc_id, chunk_id = chunk_id, text = page[starting_ind:ending_ind], source = path.name, page = i, chunk_index=j))
 
-
-
+    model = load_model()
+    embeddings = model.encode([c.text for c in all_chunks])
+    add_to_index(all_chunks, embeddings)
 
 def load_document(file_path:Path) -> list[str]:
     suffix = file_path.suffix
