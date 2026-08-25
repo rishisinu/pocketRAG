@@ -1,7 +1,8 @@
-from fastapi import FastAPI, Request
+from pathlib import Path
+
+from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pathlib import Path
 
 app = FastAPI()
 
@@ -14,9 +15,15 @@ def home(request: Request):
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
-
+UPLOAD_DIR = Path(__file__).parent / "data" / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 @app.post("/ingest")
-def ingest_data(data: dict):
-    path = data.get("file_path")
-    result = prcoess_and_store_data(path)
-    return {"status": "success", "details": result}
+async def ingest_data(file: UploadFile):
+    if file.filename is None:
+        raise HTTPException(status_code=400, detail="No filename provided")
+    path_to_save = UPLOAD_DIR / file.filename
+    with path_to_save.open("wb") as f:
+        f.write(await file.read())
+
+    result = process_and_store_data(str(path_to_save))
+    return result
