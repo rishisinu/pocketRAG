@@ -6,22 +6,31 @@ import docx
 import fitz
 import numpy as np
 from sentence_transformers import SentenceTransformer
+from langchain_huggingface import HuggingFaceEmbeddings
 from app.core.models import Chunk, IngestResult
 from app.core.indexing import add_to_index #need to implement this
+
 
 
 
 SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".docx",".md"}
 chunk_size = 512
 chunk_overlap = 102
-model_name = "#all-MiniLM-L6-v2"
+model_name = "all-MiniLM-L6-v2"
 _embedding_model: SentenceTransformer | None = None
+_embedding_fn: HuggingFaceEmbeddings | None = None
 
 def load_model():
     global _embedding_model
     if _embedding_model is None:
         _embedding_model = SentenceTransformer(model_name)
     return _embedding_model
+
+def get_embedding_model() -> HuggingFaceEmbeddings:
+    global _embedding_fn
+    if _embedding_fn is None:
+        _embedding_fn = HuggingFaceEmbeddings(model_name)
+    return _embedding_fn
 
 
 
@@ -58,7 +67,7 @@ def process_and_store_data(file_path: str) -> IngestResult:
 
     model = load_model()
     embeddings = model.encode([c.text for c in all_chunks])
-    add_to_index(all_chunks, embeddings)
+    add_to_index(all_chunks, embeddings, get_embedding_model())
 
 def load_document(file_path:Path) -> list[str]:
     suffix = file_path.suffix
