@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-
+from app.core.ingestion import process_and_store_data
 app = FastAPI()
 
 # Get the directory of this file

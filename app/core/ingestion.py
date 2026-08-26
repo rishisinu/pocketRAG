@@ -8,7 +8,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from langchain_huggingface import HuggingFaceEmbeddings
 from app.core.models import Chunk, IngestResult
-from app.core.indexing import add_to_index #need to implement this
+from app.core.indexing import add_to_index, instantiate_index #need to implement this
 
 
 
@@ -29,7 +29,7 @@ def load_model():
 def get_embedding_model() -> HuggingFaceEmbeddings:
     global _embedding_fn
     if _embedding_fn is None:
-        _embedding_fn = HuggingFaceEmbeddings(model_name)
+        _embedding_fn = HuggingFaceEmbeddings(model_name=model_name)
     return _embedding_fn
 
 
@@ -67,7 +67,13 @@ def process_and_store_data(file_path: str) -> IngestResult:
 
     model = load_model()
     embeddings = model.encode([c.text for c in all_chunks])
-    add_to_index(all_chunks, embeddings, get_embedding_model())
+    instantiate_index(get_embedding_model())
+    ing_res = add_to_index(all_chunks, embeddings, get_embedding_model())
+
+    return ing_res
+
+
+
 
 def load_document(file_path:Path) -> list[str]:
     suffix = file_path.suffix
