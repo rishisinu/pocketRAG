@@ -9,6 +9,7 @@ from sentence_transformers import SentenceTransformer
 from langchain_huggingface import HuggingFaceEmbeddings
 from app.core.models import Chunk, IngestResult
 from app.core.indexing import add_to_index, instantiate_index #need to implement this
+from app.core.bm25 import add_to_bm25
 
 
 
@@ -69,6 +70,7 @@ def process_and_store_data(file_path: str) -> IngestResult:
     embeddings = model.encode([c.text for c in all_chunks])
     instantiate_index(get_embedding_model())
     ing_res = add_to_index(all_chunks, embeddings, get_embedding_model())
+    add_to_bm25(all_chunks)
 
     return ing_res
 

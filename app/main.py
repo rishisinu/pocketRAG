@@ -4,6 +4,10 @@ from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from app.core.ingestion import process_and_store_data
+from app.core.models import QueryRequest
+from app.core.query import query_handler
+
+
 app = FastAPI()
 
 # Get the directory of this file
@@ -27,3 +31,7 @@ async def ingest_data(file: UploadFile):
 
     result = process_and_store_data(str(path_to_save))
     return result
+
+@app.post("/query")
+async def process_query(req: QueryRequest):
+    query = req.text

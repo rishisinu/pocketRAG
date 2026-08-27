@@ -18,3 +18,7 @@ class IngestResult(BaseModel):
     num_chunks: int
     status: Literal["success", "error"]
     error: str | None = None
+
+
+class QueryRequest(BaseModel):
+    text: str
