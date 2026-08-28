@@ -68,7 +68,7 @@ def process_and_store_data(file_path: str) -> IngestResult:
 
     model = load_model()
     embeddings = model.encode([c.text for c in all_chunks])
-    instantiate_index(get_embedding_model())
+    instantiate_index(get_embedding_model()) #lowk could just instantite in the indexing pipeline itself
     ing_res = add_to_index(all_chunks, embeddings, get_embedding_model())
     add_to_bm25(all_chunks)
 
