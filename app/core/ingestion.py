@@ -87,7 +87,7 @@ def load_document(file_path:Path) -> list[str]:
         return _load_txt(file_path)
     elif suffix == ".md":
         return _load_md(file_path)
-    return list[str]
+    raise ValueError(f"Unsupported file type: {suffix}")
 
 def _load_pdf(file_path:Path) -> list[str]:
     pages = []
