@@ -40,7 +40,7 @@ STOPWORDS = {
 inverted_index: dict[str, dict[str, int]] = {}
 doc_len: dict[str, int] = {}
 chunk_store: dict[str, Chunk] = {}
-N = 0
+n = 0
 total_len = 0
 
 
@@ -49,29 +49,29 @@ def tokenize(text: str) -> list[str]:
 
 
 def add_to_bm25(chunks: list[Chunk]) -> None:
-    global N, total_len
+    global n, total_len
 
     for chunk in chunks:
         tokens = tokenize(chunk.text)
-        tf = Counter(tokens)
+        tf = Counter(tokens) # Makes freq map
 
         doc_len[chunk.chunk_id] = len(tokens)
         chunk_store[chunk.chunk_id] = chunk
 
-        for term, freq in tf.items():
+        for term, freq in tf.items(): # walk thru the freq map and initialze our freq map(potential optimization is just constructing the freq map ourselves so we can do this in one pass)
             inverted_index.setdefault(term, {})[chunk.chunk_id] = freq
 
-        N += 1
+        n += 1
         total_len += len(tokens)
 
 
-def bm25_search(query: str, k: int = 6) -> list[tuple[Chunk, float]]:
-    if N == 0:
+def bm25_search(query: str, k: int) -> list[tuple[Chunk, float]]:
+    if n == 0:
         return []
 
-    avgdl = total_len / N
+    avgdl = total_len / n
     query_terms = set(tokenize(query))
-
+    # Some math i found off docs lol
     scores: dict[str, float] = {}
     for term in query_terms:
         postings = inverted_index.get(term)
@@ -79,7 +79,7 @@ def bm25_search(query: str, k: int = 6) -> list[tuple[Chunk, float]]:
             continue
 
         df = len(postings)
-        idf = math.log((N - df + 0.5) / (df + 0.5) + 1)
+        idf = math.log((n - df + 0.5) / (df + 0.5) + 1)
 
         for chunk_id, freq in postings.items():
             dl = doc_len[chunk_id]
