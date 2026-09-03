@@ -12,8 +12,9 @@ REQUEST_TIMEOUT = 180.0
 MAX_TOKENS = 768
 TEMPERATURE = 0.2  # this is a grounded QA task, we dont want it getting creative
 
-# Anything the cross encoder scored under this is noise, not worth the context window
-RELEVANCE_FLOOR = 0.05
+# ms-marco logits run very negative so the sigmoid squashes hard, this floor is
+# deliberately low, its only there to drop the obvious junk
+RELEVANCE_FLOOR = 0.01
 
 # Keep the snippet we show the user short, the full chunk still goes to the model.
 SNIPPET_LEN = 240
@@ -115,6 +116,10 @@ def select_chunks(
     ranked_chunks: list[tuple[Chunk, float]], top_k: int
 ) -> list[tuple[Chunk, float]]:
     kept = [pair for pair in ranked_chunks if pair[1] >= RELEVANCE_FLOOR]
+    if not kept:
+        # everything scored low, still hand over the best one and let the model
+        # decide, the score goes in the prompt so it knows to be careful
+        kept = ranked_chunks[:1]
     return kept[:top_k]
 
 
