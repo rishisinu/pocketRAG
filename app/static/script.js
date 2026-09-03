@@ -142,7 +142,7 @@ async function sendQuery() {
         });
         const data = await response.json();
         pending.remove();
-        addMessageToUI(data.answer, 'bot-message');
+        addAnswerToUI(data.answer, data.citations || []);
     } catch (err) {
         pending.remove();
         addMessageToUI(`Something went wrong: ${err}`, 'bot-message');
@@ -157,6 +157,95 @@ query.addEventListener('keydown', (e) => {
 clearChat.addEventListener('click', () => {
     chatWindow.innerHTML = '';
 });
+
+// The model is told to cite with [n] markers that line up with the order of the
+// chunks we sent it, so we can turn them into chips pointing at the source cards.
+function addAnswerToUI(answer, citations) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'bot-message';
+
+    const body = document.createElement('div');
+    body.className = 'answer-body';
+    const byMarker = new Map(citations.map(c => [c.marker, c]));
+
+    for(const part of answer.split(/(\[\d+\])/g)){
+        const match = part.match(/^\[(\d+)\]$/);
+        if(match && byMarker.has(Number(match[1]))){
+            const chip = document.createElement('span');
+            chip.className = 'citation-marker';
+            chip.textContent = match[1];
+            chip.title = sourceLabel(byMarker.get(Number(match[1])));
+            chip.addEventListener('click', () => highlightSource(wrapper, Number(match[1])));
+            body.appendChild(chip);
+        } else {
+            body.appendChild(document.createTextNode(part));
+        }
+    }
+    wrapper.appendChild(body);
+
+    if(citations.length > 0){
+        wrapper.appendChild(buildSources(citations));
+    }
+
+    chatWindow.appendChild(wrapper);
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+    return wrapper;
+}
+
+function sourceLabel(citation) {
+    const page = citation.page === null ? '' : ` p.${citation.page + 1}`;
+    return `${citation.source}${page}`;
+}
+
+function buildSources(citations) {
+    const details = document.createElement('details');
+    details.className = 'sources';
+
+    const summary = document.createElement('summary');
+    summary.textContent = `${citations.length} source${citations.length === 1 ? '' : 's'} used`;
+    details.appendChild(summary);
+
+    for(const citation of citations){
+        const card = document.createElement('div');
+        card.className = 'source-card';
+        card.dataset.marker = citation.marker;
+
+        const head = document.createElement('div');
+        head.className = 'source-head';
+
+        const label = document.createElement('span');
+        label.textContent = `[${citation.marker}] ${sourceLabel(citation)}`;
+
+        // the reranker score, 1.0 means the cross encoder was sure this chunk answers it
+        const score = document.createElement('span');
+        score.className = 'source-score';
+        score.textContent = citation.score.toFixed(3);
+
+        head.append(label, score);
+
+        const snippet = document.createElement('div');
+        snippet.className = 'source-snippet';
+        snippet.textContent = citation.snippet;
+
+        card.append(head, snippet);
+        details.appendChild(card);
+    }
+
+    return details;
+}
+
+function highlightSource(wrapper, marker) {
+    const details = wrapper.querySelector('.sources');
+    if(details === null) return;
+
+    details.open = true;
+    const card = details.querySelector(`.source-card[data-marker="${marker}"]`);
+    if(card === null) return;
+
+    card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    card.classList.add('flash');
+    setTimeout(() => card.classList.remove('flash'), 1200);
+}
 
 function addMessageToUI(message, className) {
     const messageElem = document.createElement('div');
