@@ -22,3 +22,19 @@ class IngestResult(BaseModel):
 
 class QueryRequest(BaseModel):
     text: str
+    top_k: int = 5  # how many reranked chunks actually get fed to the LLM
+
+
+class Citation(BaseModel):
+    marker: int  # the [n] the LLM is told to cite with
+    doc_id: str
+    chunk_id: str
+    source: str
+    page: int | None = None
+    score: float
+    snippet: str
+
+
+class QueryResponse(BaseModel):
+    answer: str
+    citations: list[Citation]
