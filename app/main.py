@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import FastAPI, Request, UploadFile, File, HTTPException
+from fastapi import FastAPI, Request, UploadFile, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from app.core.ingestion import process_and_store_data
@@ -14,17 +14,21 @@ import urllib.request
 import urllib.error
 from contextlib import asynccontextmanager
 
-SERVER_BIN = os.environ["LLAMA_SERVER_BIN"]
-MODEL_PATH = os.environ["LLAMA_MODEL_PATH"]
-l_port = 8080
+SERVER_BIN = os.environ.get("LLAMA_SERVER_BIN")
+MODEL_PATH = os.environ.get("LLAMA_MODEL_PATH")
+l_port = int(os.environ.get("LLAMA_PORT", 8080))
+n_ctx = int(os.environ.get("LLAMA_CTX", 4096))
 llama_health = f"http://localhost:{l_port}/health"
 llama_process: subprocess.Popen[bytes] | None = None
 
 
-def starting_llama_server(timeout: float = 60, interval: float = 0.5):
+def starting_llama_server(timeout: float = 120, interval: float = 0.5):
     start_time = time.monotonic()
 
     while time.monotonic() - start_time < timeout:
+        # if the process fell over there is no point sitting here for the full timeout
+        if llama_process is not None and llama_process.poll() is not None:
+            raise RuntimeError(f"llama cpp exited with code {llama_process.returncode}")
         try:
             urllib.request.urlopen(llama_health, timeout=1)
             return
@@ -32,44 +36,45 @@ def starting_llama_server(timeout: float = 60, interval: float = 0.5):
             time.sleep(interval)
     raise RuntimeError("llama cpp didnt boot")
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global llama_process
-    llama_process = subprocess.Popen([
-        SERVER_BIN,
-        "-m", MODEL_PATH,
-        "--port", str(l_port),
-    ])
-    starting_llama_server()
+
+    # If the binary/model arent configured we just assume the user is running
+    # their own llama-server already and let the client talk to it.
+    if SERVER_BIN and MODEL_PATH:
+        llama_process = subprocess.Popen([
+            SERVER_BIN,
+            "-m", MODEL_PATH,
+            "--port", str(l_port),
+            "-c", str(n_ctx),
+        ])
+        starting_llama_server()
 
     yield
 
-    llama_process.terminate()
-    llama_process.wait(timeout=10)
+    if llama_process is not None:
+        llama_process.terminate()
+        llama_process.wait(timeout=10)
+
+
 app = FastAPI(lifespan=lifespan)
-
-
-app = FastAPI()
-
-
-
-
-
-
-
-
 
 # Get the directory of this file
 BASE_DIR = Path(__file__).parent
+
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+UPLOAD_DIR = BASE_DIR / "data" / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 
 @app.get("/")
 def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
-UPLOAD_DIR = Path(__file__).parent / "data" / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 @app.post("/ingest")
 async def ingest_data(file: UploadFile):
     if file.filename is None:
@@ -80,6 +85,7 @@ async def ingest_data(file: UploadFile):
 
     result = process_and_store_data(str(path_to_save))
     return result
+
 
 @app.post("/query")
 async def process_query(req: QueryRequest):
