@@ -1,4 +1,19 @@
-from app.core.models import Chunk, Citation
+import os
+
+import httpx
+
+from app.core.models import Chunk, Citation, QueryResponse
+
+LLAMA_URL = os.environ.get("LLAMA_SERVER_URL", "http://localhost:8080")
+CHAT_ENDPOINT = f"{LLAMA_URL}/v1/chat/completions"
+
+# llama.cpp can be slow on the first token while the prompt gets processed
+REQUEST_TIMEOUT = 180.0
+MAX_TOKENS = 768
+TEMPERATURE = 0.2  # this is a grounded QA task, we dont want it getting creative
+
+# Anything the cross encoder scored under this is noise, not worth the context window
+RELEVANCE_FLOOR = 0.05
 
 # Keep the snippet we show the user short, the full chunk still goes to the model.
 SNIPPET_LEN = 240
@@ -94,3 +109,44 @@ def build_citations(ranked_chunks: list[tuple[Chunk, float]]) -> list[Citation]:
         )
         for i, (chunk, score) in enumerate(ranked_chunks, start=1)
     ]
+
+
+def select_chunks(
+    ranked_chunks: list[tuple[Chunk, float]], top_k: int
+) -> list[tuple[Chunk, float]]:
+    kept = [pair for pair in ranked_chunks if pair[1] >= RELEVANCE_FLOOR]
+    return kept[:top_k]
+
+
+async def ask_llm(query: str, ranked_chunks: list[tuple[Chunk, float]]) -> str:
+    payload = {
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_user_prompt(query, ranked_chunks)},
+        ],
+        "temperature": TEMPERATURE,
+        "max_tokens": MAX_TOKENS,
+        "stream": False,
+    }
+
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        resp = await client.post(CHAT_ENDPOINT, json=payload)
+        resp.raise_for_status()
+        body = resp.json()
+
+    return body["choices"][0]["message"]["content"].strip()
+
+
+async def answer_query(
+    query: str, ranked_chunks: list[tuple[Chunk, float]], top_k: int = 5
+) -> QueryResponse:
+    """Takes the reranked output of query_handler and turns it into a cited answer."""
+    selected = select_chunks(ranked_chunks, top_k)
+
+    try:
+        answer = await ask_llm(query, selected)
+    except (httpx.HTTPError, KeyError, IndexError) as e:
+        # dont blow up the request, the frontend can still show the sources
+        answer = f"The local model could not be reached, so no answer was generated ({e})."
+
+    return QueryResponse(answer=answer, citations=build_citations(selected))
