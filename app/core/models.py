@@ -35,6 +35,23 @@ class Citation(BaseModel):
     snippet: str
 
 
+class SentenceCheck(BaseModel):
+    """One sentence of the model's answer, and whether the evidence backs it."""
+
+    text: str
+    markers: list[int]  # the [n] markers this sentence cited, after validation
+    supported: bool
+    score: float | None = None  # entailment prob, None when rejected before L2 ran
+    reason: Literal["ok", "bad_marker", "no_citation", "low_entailment", "unchecked"]
+
+
+class Guard(BaseModel):
+    verdict: Literal["grounded", "partial", "ungrounded", "abstained"]
+    sentences: list[SentenceCheck]
+
+
 class QueryResponse(BaseModel):
     answer: str
     citations: list[Citation]
+    # optional so an older frontend, or a guard that blew up, still gets an answer
+    guard: Guard | None = None

@@ -1,8 +1,13 @@
+import asyncio
+import logging
 import os
 
 import httpx
 
-from app.core.models import Chunk, Citation, QueryResponse
+from app.core import guard
+from app.core.models import Chunk, Citation, Guard, QueryResponse
+
+logger = logging.getLogger(__name__)
 
 LLAMA_URL = os.environ.get("LLAMA_SERVER_URL", "http://localhost:8080")
 CHAT_ENDPOINT = f"{LLAMA_URL}/v1/chat/completions"
@@ -11,10 +16,6 @@ CHAT_ENDPOINT = f"{LLAMA_URL}/v1/chat/completions"
 REQUEST_TIMEOUT = 180.0
 MAX_TOKENS = 768
 TEMPERATURE = 0.2  # this is a grounded QA task, we dont want it getting creative
-
-# ms-marco logits run very negative so the sigmoid squashes hard, this floor is
-# deliberately low, its only there to drop the obvious junk
-RELEVANCE_FLOOR = 0.01
 
 # Keep the snippet we show the user short, the full chunk still goes to the model.
 SNIPPET_LEN = 240
@@ -75,7 +76,7 @@ def build_context_block(ranked_chunks: list[tuple[Chunk, float]]) -> str:
         page = "n/a" if chunk.page is None else chunk.page + 1  # pages are 0 indexed internally
         blocks.append(
             f"[{i}] source: {chunk.source} | page: {page} | chunk: {chunk.chunk_index} | "
-            f"relevance: {score:.3f}\n{chunk.text.strip()}"
+            f"relevance: {guard.sigmoid(score):.3f}\n{chunk.text.strip()}"
         )
     return "\n\n".join(blocks)
 
@@ -105,22 +106,17 @@ def build_citations(ranked_chunks: list[tuple[Chunk, float]]) -> list[Citation]:
             chunk_id=chunk.chunk_id,
             source=chunk.source,
             page=chunk.page,
-            score=score,
+            score=guard.sigmoid(score),
             snippet=chunk.text.strip()[:SNIPPET_LEN],
         )
         for i, (chunk, score) in enumerate(ranked_chunks, start=1)
     ]
 
 
-def select_chunks(
-    ranked_chunks: list[tuple[Chunk, float]], top_k: int
-) -> list[tuple[Chunk, float]]:
-    kept = [pair for pair in ranked_chunks if pair[1] >= RELEVANCE_FLOOR]
-    if not kept:
-        # everything scored low, still hand over the best one and let the model
-        # decide, the score goes in the prompt so it knows to be careful
-        kept = ranked_chunks[:1]
-    return kept[:top_k]
+ABSTAIN_ANSWER = (
+    "Nothing in the ingested documents looks relevant to that question. "
+    "The closest passages retrieved are listed below so you can judge for yourself."
+)
 
 
 async def ask_llm(query: str, ranked_chunks: list[tuple[Chunk, float]]) -> str:
@@ -146,7 +142,19 @@ async def answer_query(
     query: str, ranked_chunks: list[tuple[Chunk, float]], top_k: int = 5
 ) -> QueryResponse:
     """Takes the reranked output of query_handler and turns it into a cited answer."""
-    selected = select_chunks(ranked_chunks, top_k)
+    # L0: the reranker's scores are only trustworthy as a shape, so ask whether
+    # a peak exists rather than whether the top score clears a floor.
+    selected, abstained = guard.select_by_peak(ranked_chunks, top_k)
+
+    if abstained:
+        # no cliff and the top chunk is on the model's floor, so retrieval found
+        # nothing. Skip the LLM entirely, which also skips a generation that can
+        # burn most of REQUEST_TIMEOUT.
+        return QueryResponse(
+            answer=ABSTAIN_ANSWER,
+            citations=build_citations(selected),
+            guard=Guard(verdict="abstained", sentences=[]),
+        )
 
     try:
         answer = await ask_llm(query, selected)
@@ -154,4 +162,13 @@ async def answer_query(
         # dont blow up the request, the frontend can still show the sources
         answer = f"The local model could not be reached, so no answer was generated ({e})."
 
-    return QueryResponse(answer=answer, citations=build_citations(selected))
+    try:
+        # sync and CPU bound once L2 lands, so keep it off the event loop the
+        # same way query_handler is kept off it in main.py
+        checked = await asyncio.to_thread(guard.check_answer, answer, selected)
+    except Exception:
+        # a broken guard must never cost the user an otherwise fine answer
+        logger.exception("guard failed, returning the answer unchecked")
+        checked = None
+
+    return QueryResponse(answer=answer, citations=build_citations(selected), guard=checked)

@@ -6,7 +6,7 @@ from fastapi.templating import Jinja2Templates
 from app.core.ingestion import process_and_store_data
 from app.core.LLM_query import answer_query
 from app.core.models import IngestResult, QueryRequest, QueryResponse
-from app.core.query_crossencoder import query_handler
+from app.core.query_crossencoder import query_handler , amt_of_chunks
 
 import asyncio
 import os
