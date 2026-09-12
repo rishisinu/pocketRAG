@@ -45,8 +45,13 @@ class SentenceCheck(BaseModel):
     reason: Literal["ok", "bad_marker", "no_citation", "low_entailment", "unchecked"]
 
 
+# "abstained" is set by L0 before the LLM is called. The other three are rolled
+# up from the per sentence results by guard.roll_up().
+Verdict = Literal["grounded", "partial", "ungrounded", "abstained"]
+
+
 class Guard(BaseModel):
-    verdict: Literal["grounded", "partial", "ungrounded", "abstained"]
+    verdict: Verdict
     sentences: list[SentenceCheck]
 
 

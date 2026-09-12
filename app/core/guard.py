@@ -15,7 +15,7 @@ import math
 import re
 from collections.abc import Sequence
 
-from app.core.models import Chunk, Guard, SentenceCheck
+from app.core.models import Chunk, Guard, SentenceCheck, Verdict
 
 # ---------------------------------------------------------------------------
 # L0 thresholds, in LOGIT space. Never threshold the sigmoid here.
@@ -169,6 +169,29 @@ def select_by_peak(
     return ranked_chunks[: min(peak_size, top_k)], False
 
 
+def roll_up(sentences: list[SentenceCheck]) -> Verdict:
+    """Answer level verdict from the per sentence results.
+
+    Pure aggregation, no model. L1 calls this over its own results, and L2
+    calls it again after it has downgraded some sentences, so "partial" means
+    the same thing in both layers.
+    """
+    # sentences marked "ok" are hedges and connective tissue. They assert
+    # nothing, so they are evidence neither for nor against the answer.
+    claims = [s for s in sentences if s.reason != "ok"]
+    if not claims:
+        # an answer made entirely of hedges ("the retrieved documents do not
+        # cover this") is correct behaviour, not an ungrounded answer
+        return "grounded"
+
+    failed = [s for s in claims if not s.supported]
+    if not failed:
+        return "grounded"
+    if len(failed) == len(claims):
+        return "ungrounded"
+    return "partial"
+
+
 def check_answer(answer: str, selected: list[tuple[Chunk, float]]) -> Guard:
     """Verify an answer against the chunks it was generated from.
 
@@ -176,26 +199,31 @@ def check_answer(answer: str, selected: list[tuple[Chunk, float]]) -> Guard:
     plumbing is here so the response shape is stable before the logic lands.
     """
 
-    valid_sentences = []
-    invalid_sentences = []
+    sentences = []
+
     for sentence in split_sentences(answer):
+
         markers = extract_markers(sentence)
         inv = False
+        hasMarker = False
         for marker in markers:
-            if marker > len(selected):
+            if marker > len(selected) or marker <= 0:
                 inv = True
-            if inv:
-                invalid_sentences.append(
-                    SentenceCheck(
-                        text = sentence,
-                        markers = markers,
-                        supported = False,
-                        score = None,
-                        reason = "bad_marker"
-                    )
+
+            hasMarker = True
+        if inv:
+            sentences.append(
+                SentenceCheck(
+                    text = sentence,
+                    markers = markers,
+                    supported = False,
+                    score = None,
+                    reason = "bad_marker"
                 )
-            else:
-                valid_sentences.append(
+            )
+        elif is_claim(sentence):
+            if hasMarker:
+                sentences.append(
                     SentenceCheck(
                         text = sentence,
                         markers = markers,
@@ -204,26 +232,25 @@ def check_answer(answer: str, selected: list[tuple[Chunk, float]]) -> Guard:
                         reason = "unchecked"
                     )
                 )
+            else:
+                sentences.append(
+                    SentenceCheck(
+                        text = sentence,
+                        markers = [],
+                        supported = False,
+                        score = None,
+                        reason = "no_citation"
+                    )
+                )
+        else:
+            sentences.append(
+                SentenceCheck(
+                    text = sentence,
+                    markers = [],
+                    supported = True,
+                    score = None,
+                    reason = "ok"
+                )
+            )
 
-
-
-
-
-
-
-
-
-
-
-
-    sentences = [
-        SentenceCheck(
-            text=sentence,
-            markers=extract_markers(sentence),
-            supported=True,
-            score=None,
-            reason="unchecked",
-        )
-        for sentence in split_sentences(answer)
-
-    return Guard(verdict="grounded", sentences=sentences)
+    return Guard(verdict=roll_up(sentences), sentences=sentences)
