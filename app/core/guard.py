@@ -155,11 +155,7 @@ def should_abstain(scores: Sequence[float], cliff: float) -> bool:
 def select_by_peak(
     ranked_chunks: list[tuple[Chunk, float]], top_k: int
 ) -> tuple[list[tuple[Chunk, float]], bool]:
-    """L0. Returns (chunks to send to the LLM, whether to abstain).
 
-    On abstain the chunks are still returned so the frontend can show what was
-    retrieved and the user can judge the miss for themselves.
-    """
     if not ranked_chunks:
         return [], True
 
@@ -179,6 +175,47 @@ def check_answer(answer: str, selected: list[tuple[Chunk, float]]) -> Guard:
     L1 and L2 are not wired in yet, every sentence comes back unchecked. The
     plumbing is here so the response shape is stable before the logic lands.
     """
+
+    valid_sentences = []
+    invalid_sentences = []
+    for sentence in split_sentences(answer):
+        markers = extract_markers(sentence)
+        inv = False
+        for marker in markers:
+            if marker > len(selected):
+                inv = True
+            if inv:
+                invalid_sentences.append(
+                    SentenceCheck(
+                        text = sentence,
+                        markers = markers,
+                        supported = False,
+                        score = None,
+                        reason = "bad_marker"
+                    )
+                )
+            else:
+                valid_sentences.append(
+                    SentenceCheck(
+                        text = sentence,
+                        markers = markers,
+                        supported = True,
+                        score = None,
+                        reason = "unchecked"
+                    )
+                )
+
+
+
+
+
+
+
+
+
+
+
+
     sentences = [
         SentenceCheck(
             text=sentence,
@@ -188,5 +225,5 @@ def check_answer(answer: str, selected: list[tuple[Chunk, float]]) -> Guard:
             reason="unchecked",
         )
         for sentence in split_sentences(answer)
-    ]
+
     return Guard(verdict="grounded", sentences=sentences)
