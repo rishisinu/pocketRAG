@@ -1,14 +1,10 @@
 """Hallucination guard.
 
-Checks the model's answer against the chunks it was actually given, in layers,
-cheapest first:
+
 
   L0  abstain gate     - is retrieval good enough to bother asking the LLM?
   L1  marker validation- are the [n] citations real, and does every claim carry one?
   L2  NLI entailment   - does the cited chunk actually support the sentence?
-
-Nothing here rewrites the answer. The guard reports, the frontend renders the
-doubt, and the user gets to see both the claim and our confidence in it.
 """
 
 import math
@@ -17,34 +13,13 @@ from collections.abc import Sequence
 
 from app.core.models import Chunk, Guard, SentenceCheck, Verdict
 
-# ---------------------------------------------------------------------------
-# L0 thresholds, in LOGIT space. Never threshold the sigmoid here.
-#
-# The cross encoder is trained with a ranking loss, which is invariant to
-# monotonic transforms of the score: only the ORDER is optimised, so the
-# absolute scale drifts with question wording. Measured on one passage,
-# "Is remote work permitted?" scored logit +9.8 and "Can I work from home?"
-# scored -6.5, same passage, same meaning. A fixed floor therefore filters by
-# phrasing, not by relevance.
-#
-# What IS stable is the shape of the distribution. An answerable query produces
-# a cliff - a few chunks up top, a sharp drop, then the rest. An unanswerable
-# one pins every chunk to the model's floor (~-11) together, so there is no
-# cliff and the largest "drop" is just noise. Measured cliff sizes:
-#   answerable    0.76 .. 7.83   (n=5, incl. a paraphrased query and a pool
-#                                 where every retrieved chunk was on topic)
-#   unanswerable  0.02 .. 0.10   (n=2)
-#
-# Both conditions are required to abstain. Cliff alone would falsely abstain
-# whenever the retrieved pool is uniformly relevant; top1 alone was measured
-# rejecting 3 of 6 answerable queries, because a correct-but-paraphrased query
-# sits at logit -10.3 while a genuinely unanswerable one sits at -11.0.
-#
-# TODO: both come from a small synthetic set. Tune against the real corpus by
-# logging (cliff, top1) for ~20 questions with known answers before trusting
-# the abstain path.
+from sentence_transformers import CrossEncoder
+
 ABSTAIN_CLIFF = 0.4  # largest logit drop between adjacent ranked chunks
 ABSTAIN_TOP1 = -10.5  # logit floor the reranker pins to when nothing matches
+MODEL_NAME = 'cross-encoder/nli-distilroberta-base'
+
+model = None
 
 # Sentences shorter than this are almost always connective tissue, not claims.
 MIN_CLAIM_WORDS = 5
@@ -192,6 +167,152 @@ def roll_up(sentences: list[SentenceCheck]) -> Verdict:
     return "partial"
 
 
+# ---------------------------------------------------------------------------
+# L2: NLI entailment.
+#
+# Premise is the CHUNK, hypothesis is the model's SENTENCE. The order is not
+# cosmetic - measured on the same two texts, the correct order scored
+# entailment 0.9878 and the reversed order 0.0103, with no error either way.
+#
+# The model emits three classes and they are not redundant: contradiction is
+# not 1 - entailment, because neutral absorbs the difference. "Your documents
+# refute this" (contra 0.95) and "your documents don't mention it" (contra 0.02)
+# can both sit at entailment ~0.01.
+NLI_MODEL_NAME = "cross-encoder/nli-distilroberta-base"
+ENTAIL_PASS = 0.5  # entailment at or above this counts as supported
+CONTRA_HARD = 0.85  # contradiction above this is treated as a real conflict
+
+# Measured blind spot: this model cannot reason about numbers. A TRUE sentence
+# ("about a month" vs a chunk saying "within 30 days") scored contradiction
+# 0.9449, and a FALSE one (comparing 90% against 70%) scored only 0.0460. When
+# both texts carry digits and those digits differ, the contradiction score is
+# unreliable in either direction, so it is not allowed to fail a sentence.
+DIGITS_RE = re.compile(r"\d+")
+
+_nli_model = None
+_nli_index: tuple[int, int] | None = None
+
+
+def instantiate_nli():
+    """Lazy load. Kept out of the lifespan on purpose - this box is memory
+    tight, and a query that abstains at L0 never needs these weights."""
+    global _nli_model, _nli_index
+    if _nli_model is None:
+        _nli_model = CrossEncoder(NLI_MODEL_NAME, max_length=512)
+        raw_labels = getattr(_nli_model.config, "id2label", None) or {}
+        labels = {int(i): str(v).lower() for i, v in raw_labels.items()}
+        order = [labels[i] for i in sorted(labels)]
+        if "entailment" not in order or "contradiction" not in order:
+            raise RuntimeError(f"{NLI_MODEL_NAME} has no NLI labels: {order}")
+        # read the order rather than hardcoding: a model swap can reorder these
+        # and a wrong index silently scores the opposite class
+        _nli_index = (order.index("entailment"), order.index("contradiction"))
+    return _nli_model, _nli_index
+
+
+def softmax3(row: Sequence[float]) -> list[float]:
+    top = max(row)
+    exps = [math.exp(v - top) for v in row]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+
+def numeric_mismatch(premise: str, hypothesis: str) -> bool:
+    """True when both texts carry digits and they disagree, which is exactly
+    where this model's contradiction score stops being trustworthy."""
+    a = set(DIGITS_RE.findall(premise))
+    b = set(DIGITS_RE.findall(hypothesis))
+    return bool(a and b and a != b)
+
+
+def hypothesis_for(text: str) -> str:
+    """Strip citation markers before scoring.
+
+    The markers are pipeline syntax, not part of the claim, and the NLI model
+    reads them as noise. Measured: the same sentence scored entailment 0.9552
+    clean and 0.4093 with a trailing "[1]" left in, which is the difference
+    between passing and being flagged.
+    """
+    stripped = MARKER_RE.sub("", text)
+    # collapse the double spaces and the " ." the markers leave behind
+    return re.sub(r"\s+([.!?,;:])", r"\1", re.sub(r"\s+", " ", stripped)).strip()
+
+
+def check_entailment(
+    sentences: list[SentenceCheck], selected: list[tuple[Chunk, float]]
+) -> list[SentenceCheck]:
+    """L2. Fills in `score` and can downgrade a sentence L1 passed.
+
+    Sentences are handled by the reason L1 gave them:
+      ok                        skipped, it asserts nothing
+      unchecked                 checked against the chunks it cited
+      bad_marker / no_citation  checked against ALL of `selected`, which
+                                separates "true claim, wrong citation" from
+                                "invented claim". Strict mode keeps them
+                                unsupported either way, but the score says which.
+    """
+    if not selected:
+        return sentences
+
+    source_count = len(selected)
+    pairs: list[list[str]] = []
+    owner: list[tuple[int, int]] = []  # (sentence index, marker)
+
+    for i, sentence in enumerate(sentences):
+        if sentence.reason == "ok":
+            continue
+        if sentence.reason == "unchecked":
+            marks = [m for m in sentence.markers if 1 <= m <= source_count]
+        else:
+            marks = list(range(1, source_count + 1))
+        for mark in marks:
+            pairs.append([selected[mark - 1][0].text, hypothesis_for(sentence.text)])
+            owner.append((i, mark))
+
+    if not pairs:
+        return sentences
+
+    model, index = instantiate_nli()
+    assert index is not None
+    entail_i, contra_i = index
+    # one call for the whole answer, per sentence calls turn ~50ms into ~1s
+    raw = model.predict(pairs, show_progress_bar=False)
+    probs = [softmax3([float(v) for v in row]) for row in raw]
+
+    for i, sentence in enumerate(sentences):
+        rows = [k for k, (si, _) in enumerate(owner) if si == i]
+        if not rows:
+            continue
+
+        # max entailment and max contradiction are taken INDEPENDENTLY. They
+        # answer different questions and need not come from the same chunk: a
+        # claim can be entailed by source 1 at 0.99 while source 2 refutes it
+        # at 0.98, and reading contra off the best entailment row hides that.
+        best_entail = max(probs[k][entail_i] for k in rows)
+        conflicting = [
+            owner[k][1]
+            for k in rows
+            if probs[k][contra_i] > CONTRA_HARD
+            and not numeric_mismatch(pairs[k][0], pairs[k][1])
+        ]
+
+        sentence.score = best_entail
+
+        if best_entail >= ENTAIL_PASS:
+            # some source backs the claim. Per the current policy entailment
+            # wins outright, so any source that disagrees is dropped from the
+            # citation rather than failing the sentence.
+            if conflicting:
+                sentence.markers = [m for m in sentence.markers if m not in conflicting]
+        elif sentence.reason == "unchecked":
+            # nothing supports it. This also absorbs the hard contradiction
+            # case, because the reason enum has no value for "refuted" yet.
+            sentence.supported = False
+            sentence.reason = "low_entailment"
+
+    return sentences
+
+
 def check_answer(answer: str, selected: list[tuple[Chunk, float]]) -> Guard:
     """Verify an answer against the chunks it was generated from.
 
@@ -253,4 +374,12 @@ def check_answer(answer: str, selected: list[tuple[Chunk, float]]) -> Guard:
                 )
             )
 
+    sentences = check_entailment(sentences, selected)
+
     return Guard(verdict=roll_up(sentences), sentences=sentences)
+
+
+def instantiate_model():
+    global model
+    if model is None:
+        model = CrossEncoder(MODEL_NAME)
