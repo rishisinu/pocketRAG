@@ -316,8 +316,7 @@ def check_entailment(
 def check_answer(answer: str, selected: list[tuple[Chunk, float]]) -> Guard:
     """Verify an answer against the chunks it was generated from.
 
-    L1 and L2 are not wired in yet, every sentence comes back unchecked. The
-    plumbing is here so the response shape is stable before the logic lands.
+    e so the response shape is stable before the logic lands.
     """
 
     sentences = []

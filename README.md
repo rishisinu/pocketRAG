@@ -1,2 +1,2 @@
 # pocketRAG
-PocketRAG Project
+This is a mini "PocketRAG" project. Essentially what this does is we spin up a simple UI for the user to interact with the model and the pipeline. The user is able to select documents for ingestion and can then query the model based off ingested docs. We use FAISS and BM25, each retreiving top 10 chunks, which then passes thru a cross encoder that returns the final 6 most relavent chunks whgich the LLM then uses in its query to return the answer to the user

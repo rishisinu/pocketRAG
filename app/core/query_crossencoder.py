@@ -7,7 +7,7 @@ from sentence_transformers import CrossEncoder
 model_name = 'cross-encoder/ms-marco-MiniLM-L6-v2'
 model = None
 #Implementing reranker model here aswell.
-amt_of_chunks = 6
+amt_of_chunks = 20  # candidates pulled from EACH of faiss and bm25 before reranking
 def query_handler(query: str):
 
 
